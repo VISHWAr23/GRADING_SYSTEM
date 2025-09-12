@@ -9,132 +9,113 @@ import os
 import uuid
 
 app = Flask(__name__)
-CORS(app) 
+CORS(app)
 
 # --- Configuration ---
 app.config['MAX_CONTENT_LENGTH'] = 16 * 1024 * 1024  # 16MB max file size
+
+# --- Constants ---
+GRADE_POINTS_MAP = {'O': 10, 'A+': 9, 'A': 8, 'B+': 7, 'B': 6, 'C': 5, 'U': 0}
 
 # --- Grading Logic ---
 
 def apply_fixed_grading(marks):
     """
-    Apply fixed grading scheme based on absolute marks.
-    This is used when student count is <= 30.
-    Returns a tuple of two pandas Series: (grades, normalized_values).
+    Apply fixed grading scheme based on absolute marks for <= 30 students.
     """
-    # --- Grade Calculation based on provided TABLE-8 ---
     def get_grade(mark):
-        if pd.isna(mark) or mark < 50:
-            return 'U'
-        if mark >= 91:
-            return 'O'
-        elif mark >= 81:
-            return 'A+'
-        elif mark >= 71:
-            return 'A'
-        elif mark >= 61:
-            return 'B+'
-        elif mark >= 56:
-            return 'B'
-        elif mark >= 50:
-            return 'C'
-        else:
-            return 'U'
-    
-    grades = marks.apply(get_grade)
+        if pd.isna(mark) or mark < 50: return 'U'
+        if mark >= 91: return 'O'
+        if mark >= 81: return 'A+'
+        if mark >= 71: return 'A'
+        if mark >= 61: return 'B+'
+        if mark >= 56: return 'B'
+        if mark >= 50: return 'C'
+        return 'U'
 
-    # --- Normalization (Min-Max) ---
-    # Normalization is applied to all marks for statistical purposes
+    grades = marks.apply(get_grade)
     valid_marks = marks.dropna()
     normalized_values = pd.Series(np.nan, index=marks.index)
-    
+
     if not valid_marks.empty:
-        min_mark = valid_marks.min()
-        max_mark = valid_marks.max()
+        min_mark, max_mark = valid_marks.min(), valid_marks.max()
         mark_range = max_mark - min_mark
-        
         if mark_range > 0:
             normalized_values.update((valid_marks - min_mark) / mark_range)
-        else: # Handle case where all marks are identical
+        else:
             normalized_values.update(pd.Series(1.0, index=valid_marks.index))
-            
+
     return grades, normalized_values
 
 def apply_relative_grading(marks):
     """
-    Apply relative grading using Box-Cox transformation for >30 students.
-    Crucially, this is ONLY applied to students who have passed (marks >= 50).
-    Returns a tuple of two pandas Series: (grades, normalized_values).
+    Apply relative grading for > 30 students to achieve a bell-curve distribution.
+    This is applied ONLY to students who have passed (marks >= 50).
     """
-    # Initialize Series to hold the final results for all students
     final_grades = pd.Series('U', index=marks.index)
     final_normalized_values = pd.Series(np.nan, index=marks.index)
-
-    # --- Isolate Passed Students ---
-    # Relative grading is only for students with marks >= 50
-    passed_mask = marks >= 50
+    passed_mask = (marks >= 50) & marks.notna()
     passed_marks = marks[passed_mask]
 
-    # If no one passed, everyone gets 'U', so we can return early
     if passed_marks.empty:
         return final_grades, final_normalized_values
 
-    # --- Fallback for small number of passed students ---
-    # If fewer than 2 students passed, Box-Cox is not viable.
-    # Use fixed grading for those who passed.
-    if len(passed_marks) < 2:
-        passed_grades, passed_norm_vals = apply_fixed_grading(passed_marks)
-        final_grades.update(passed_grades)
-        final_normalized_values.update(passed_norm_vals)
-        return final_grades, final_normalized_values
-
-    # Ensure all values are positive for Box-Cox
-    adjusted_marks = passed_marks
-    # min_passed_mark = passed_marks.min()
-    # if min_passed_mark <= 0:
-    #     # Add 1 to ensure all values are > 0
-    #     adjusted_marks = passed_marks + abs(min_passed_mark) + 1
-
-    # Fallback if all passed marks are the same
-    if adjusted_marks.nunique() == 1:
+    if passed_marks.nunique() < 2:
         passed_grades, passed_norm_vals = apply_fixed_grading(passed_marks)
         final_grades.update(passed_grades)
         final_normalized_values.update(passed_norm_vals)
         return final_grades, final_normalized_values
 
     try:
-        # --- Apply Box-Cox Transformation on Passed Students ---
-        transformed_marks, _ = boxcox(adjusted_marks)
+        transformed_marks, _ = boxcox(passed_marks)
+        transformed_series = pd.Series(transformed_marks, index=passed_marks.index)
+        final_normalized_values.update(transformed_series)
+
+        mean = transformed_series.mean()
+        std_dev = transformed_series.std()
         
-        # Store transformed marks in the final normalized values series
-        final_normalized_values.loc[passed_mask] = transformed_marks
+        if std_dev == 0:
+            raise ValueError("Standard deviation is zero, cannot apply relative grading.")
+
+        # --- Define Grade Cutoffs based on Standard Deviations from the Mean ---
+        o_cutoff      = mean + 1.65 * std_dev
+        a_plus_cutoff = mean + 0.85 * std_dev
+        a_cutoff      = mean
+        b_plus_cutoff = mean - 0.9 * std_dev
+        b_cutoff      = mean - 1.8 * std_dev
+
+        # --- CORRECTED: Assign Grades using explicit ranges for a proper bell curve ---
+        # This uses np.select for clear, non-overlapping conditions.
+        conditions = [
+            (transformed_series >= o_cutoff),
+            (transformed_series >= a_plus_cutoff),
+            (transformed_series >= a_cutoff),
+            (transformed_series >= b_plus_cutoff),
+            (transformed_series >= b_cutoff),
+        ]
+        grade_choices = ['O', 'A+', 'A', 'B+', 'B', 'C']
         
-        # Calculate percentiles for grade boundaries from the transformed marks
-        percentiles = np.percentile(transformed_marks, [85, 70, 55, 40, 25, 10])
-        o_cutoff, a_plus_cutoff, a_cutoff, b_plus_cutoff, b_cutoff, c_cutoff = percentiles
-        
-        # --- Assign Grades to Passed Students ---
-        # Create a temporary series for grades of passed students
-        passed_grades = pd.Series('C', index=passed_marks.index) # Default passed grade is C
-        
-        # Vectorially assign grades based on transformed value cutoffs
-        passed_grades[final_normalized_values.loc[passed_mask] >= b_cutoff] = 'B'
-        passed_grades[final_normalized_values.loc[passed_mask] >= b_plus_cutoff] = 'B+'
-        passed_grades[final_normalized_values.loc[passed_mask] >= a_cutoff] = 'A'
-        passed_grades[final_normalized_values.loc[passed_mask] >= a_plus_cutoff] = 'A+'
-        passed_grades[final_normalized_values.loc[passed_mask] >= o_cutoff] = 'O'
-        
-        # Update the final grades series with the calculated relative grades
+        # default='C' handles passed students below the c_cutoff
+        passed_grades = pd.Series(np.select(conditions, grade_choices, default='C'), index=passed_marks.index)
+
         final_grades.update(passed_grades)
-        
-        return final_grades, final_normalized_values
-    
+
     except Exception as e:
-        print(f"Box-Cox transformation failed: {e}. Falling back to fixed grading for passed students.")
+        print(f"Relative grading failed: {e}. Falling back to fixed grading.")
         passed_grades, passed_norm_vals = apply_fixed_grading(passed_marks)
         final_grades.update(passed_grades)
         final_normalized_values.update(passed_norm_vals)
-        return final_grades, final_normalized_values
+
+    return final_grades, final_normalized_values
+
+def calculate_grade_ranges(df):
+    """Calculates the min-max mark range for each grade present in the DataFrame."""
+    grade_ranges = {}
+    ranges_df = df.groupby('Grade')['Marks'].agg(['min', 'max']).dropna()
+    for grade, stats in ranges_df.iterrows():
+        min_mark, max_mark = int(stats['min']), int(stats['max'])
+        grade_ranges[grade] = f"{min_mark} - {max_mark}" if min_mark != max_mark else str(min_mark)
+    return grade_ranges
 
 # --- API Endpoints ---
 
@@ -161,44 +142,34 @@ def upload_file():
         
         name_col_found = next((col for col in ['Name', 'Student Name', 'Student', 'name'] if col in df.columns), None)
         if not name_col_found:
-            return jsonify({'error': 'Excel file must contain a column for student names (e.g., "Name")'}), 400
+            return jsonify({'error': 'Excel file must contain a name column (e.g., "Name")'}), 400
         
         df.rename(columns={name_col_found: 'Name'}, inplace=True)
         df['Marks'] = pd.to_numeric(df['Marks'], errors='coerce')
         
-        # Determine which grading method to use
-        grading_method = 'relative_grading' if len(df.dropna(subset=['Marks'])) > 30 else 'fixed_grading'
+        valid_students_count = len(df.dropna(subset=['Marks']))
+        grading_method = 'relative_grading' if valid_students_count > 30 else 'fixed_grading'
         grading_function = apply_relative_grading if grading_method == 'relative_grading' else apply_fixed_grading
         
-        # Apply grading function
         df['Grade'], df['Normalized_Value'] = grading_function(df['Marks'])
-        
-        #  **MODIFICATION HERE**: Calculate Grade Points based on the assigned Grade
-        grade_points_map = {'O': 10, 'A+': 9, 'A': 8, 'B+': 7, 'B': 6, 'C': 5, 'U': 0}
-        df['Grade_Points'] = df['Grade'].map(grade_points_map).fillna(0).astype(int)
+        df['Grade_Points'] = df['Grade'].map(GRADE_POINTS_MAP).fillna(0).astype(int)
 
-        # --- Prepare Response Data ---
         valid_marks = df['Marks'].dropna()
         summary_stats = {
             'count': int(valid_marks.count()),
             'average': round(valid_marks.mean(), 2) if not valid_marks.empty else 0,
             'max': int(valid_marks.max()) if not valid_marks.empty else 0,
             'min': int(valid_marks.min()) if not valid_marks.empty else 0,
-            'grading_method': grading_method
+            'grading_method': grading_method,
+            'grade_ranges': calculate_grade_ranges(df)
         }
         
-        # Select and format columns for the JSON response and Excel output
-        #  **MODIFICATION HERE**: Added 'Grade_Points'
         display_cols = ['Name', 'Marks', 'Grade', 'Grade_Points', 'Normalized_Value']
         df_display = df[display_cols].copy()
-        
-        # Convert NaN/NaT to None for proper JSON serialization
-        for col in ['Marks', 'Normalized_Value']:
-            df_display[col] = df_display[col].astype(object).where(df_display[col].notna(), None)
-            
+        df_display['Marks'] = df_display['Marks'].astype(object).where(df_display['Marks'].notna(), None)
+        df_display['Normalized_Value'] = df_display['Normalized_Value'].astype(object).where(df_display['Normalized_Value'].notna(), None)
         student_details = df_display.to_dict(orient='records')
         
-        # --- Store Processed File for Download ---
         output = io.BytesIO()
         df.to_excel(output, index=False, sheet_name='Graded_Results', engine='openpyxl')
         output.seek(0)
@@ -227,8 +198,6 @@ def download_specific_file(file_id):
             return jsonify({'error': 'File not found or has expired'}), 404
         
         file_data = processed_files[file_id]
-        
-        # Use a new BytesIO object to not interfere with the stored data
         buffer = io.BytesIO(file_data['data'])
         buffer.seek(0)
         
@@ -247,30 +216,10 @@ def download_specific_file(file_id):
 def health_check():
     return jsonify({'status': 'healthy', 'message': 'Student Grading System API is running'})
 
-@app.route('/', methods=['GET'])
-def home():
-    return jsonify({
-        'message': 'Student Grading System API',
-        'version': '1.2.0',
-        'endpoints': {
-            'POST /upload': 'Upload Excel file for grading.',
-            'GET /download/<file_id>': 'Download the processed Excel file.',
-            'GET /health': 'Health check endpoint.'
-        }
-    })
-
 # --- Error Handlers ---
 @app.errorhandler(413)
 def too_large(e):
     return jsonify({'error': 'File too large. Maximum size is 16MB.'}), 413
-
-@app.errorhandler(404)
-def not_found(e):
-    return jsonify({'error': 'Endpoint not found'}), 404
-
-@app.errorhandler(405)
-def method_not_allowed(e):
-    return jsonify({'error': 'Method not allowed'}), 405
 
 if __name__ == '__main__':
     print("Starting Student Grading System API...")

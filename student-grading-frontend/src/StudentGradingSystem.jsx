@@ -1,18 +1,20 @@
 import React, { useState, useRef } from 'react';
-import { Upload, Download, CheckCircle, AlertCircle, FileText, Loader2, X, BarChart3 } from 'lucide-react';
+import { Upload, Download, CheckCircle, AlertCircle, FileText, Loader2, X, BarChart3, ListOrdered } from 'lucide-react';
+import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from 'recharts';
 
 const StudentGradingSystem = () => {
     const [selectedFile, setSelectedFile] = useState(null);
     const [isUploading, setIsUploading] = useState(false);
-    const [uploadStatus, setUploadStatus] = useState(null);
     const [notification, setNotification] = useState({ message: '', type: '' });
     const [downloadInfo, setDownloadInfo] = useState(null);
-    const [resultStats, setResultStats] = useState(null); 
-    const [resultDetails, setResultDetails] = useState([]); 
+    const [resultStats, setResultStats] = useState(null);
+    const [resultDetails, setResultDetails] = useState([]);
+    const [chartData, setChartData] = useState([]);
+    const [gradeRanges, setGradeRanges] = useState(null); // ⭐ State for calculated grade ranges
     const [dragActive, setDragActive] = useState(false);
     const inputRef = useRef(null);
 
-    // No changes to functionality
+    // This defines the grade order for the chart and ranges display
     const gradeSystem = {
         ranges: [
             { grade: 'O', points: 10 }, { grade: 'A+', points: 9 },
@@ -29,18 +31,19 @@ const StudentGradingSystem = () => {
 
     const resetState = () => {
         setSelectedFile(null);
-        setUploadStatus(null);
         setIsUploading(false);
         setDownloadInfo(null);
         setResultStats(null);
         setResultDetails([]);
+        setChartData([]);
+        setGradeRanges(null); // ⭐ Reset calculated ranges
         if (inputRef.current) inputRef.current.value = '';
     };
 
     const handleFileSelect = (files) => {
         if (!files || files.length === 0) return;
         const file = files[0];
-        
+
         if (!file.name.toLowerCase().endsWith('.xlsx') && !file.name.toLowerCase().endsWith('.xls')) {
             showNotification('Please select a valid Excel file (.xlsx or .xls)', 'error');
             return;
@@ -61,12 +64,8 @@ const StudentGradingSystem = () => {
 
     const handleUpload = async () => {
         if (!selectedFile) return showNotification('Please select a file first', 'error');
-        
-        setIsUploading(true);
-        setUploadStatus(null);
-        setResultStats(null);
-        setResultDetails([]);
 
+        setIsUploading(true);
         const formData = new FormData();
         formData.append('file', selectedFile);
 
@@ -75,13 +74,40 @@ const StudentGradingSystem = () => {
             const result = await response.json();
             if (!response.ok) throw new Error(result.error || 'Failed to upload file');
 
-            setUploadStatus('success');
             setDownloadInfo({ fileId: result.file_id, filename: result.filename });
             setResultStats(result.summary);
             setResultDetails(result.details);
             showNotification('File processed successfully!', 'success');
+
+            // Process data for the bar chart
+            const gradeOrder = gradeSystem.ranges.map(r => r.grade);
+            const counts = result.details.reduce((acc, student) => {
+                acc[student.Grade] = (acc[student.Grade] || 0) + 1;
+                return acc;
+            }, {});
+            const formattedChartData = gradeOrder.map(grade => ({
+                grade: grade,
+                'Number of Students': counts[grade] || 0,
+            }));
+            setChartData(formattedChartData);
+
+            // ⭐ CORRECTED: Calculate grade ranges from the fetched details
+            const ranges = result.details.reduce((acc, student) => {
+                const { Grade, Marks } = student;
+                // Ensure grade and marks are valid before processing
+                if (Grade && Marks !== null && Marks !== undefined) {
+                    if (!acc[Grade]) {
+                        acc[Grade] = { min: Marks, max: Marks };
+                    } else {
+                        acc[Grade].min = Math.min(acc[Grade].min, Marks);
+                        acc[Grade].max = Math.max(acc[Grade].max, Marks);
+                    }
+                }
+                return acc;
+            }, {});
+            setGradeRanges(ranges);
+
         } catch (error) {
-            setUploadStatus('error');
             showNotification(error.message, 'error');
         } finally {
             setIsUploading(false);
@@ -90,11 +116,9 @@ const StudentGradingSystem = () => {
 
     const handleDownload = async () => {
         if (!downloadInfo) return showNotification('No file available for download.', 'error');
-
         try {
             const response = await fetch(`http://localhost:5000/download/${downloadInfo.fileId}`);
             if (!response.ok) throw new Error('Download failed from server.');
-
             const blob = await response.blob();
             const url = window.URL.createObjectURL(blob);
             const link = document.createElement('a');
@@ -110,22 +134,16 @@ const StudentGradingSystem = () => {
         }
     };
 
-    // ⭐ MODIFICATION HERE: Simplified color logic for a more professional look
     const getGradePillStyle = (grade) => {
         switch (grade) {
-            case 'O':
-            case 'A+':
-            case 'A':
-                return 'bg-green-100 text-green-800';
-            case 'U':
-                return 'bg-red-100 text-red-800';
-            default:
-                return 'bg-slate-100 text-slate-800';
+            case 'O': case 'A+': case 'A': return 'bg-green-100 text-green-800';
+            case 'U': return 'bg-red-100 text-red-800';
+            default: return 'bg-slate-100 text-slate-800';
         }
     };
 
     const StatCard = ({ title, value }) => (
-        <div className="border border-slate-200 bg-white p-4 rounded-lg">
+        <div className="border border-slate-200 bg-white p-4">
             <p className="text-sm text-slate-500 font-medium">{title}</p>
             <p className="text-2xl font-semibold text-slate-800">{value}</p>
         </div>
@@ -134,21 +152,21 @@ const StudentGradingSystem = () => {
     return (
         <div className="min-h-screen bg-slate-50 flex flex-col items-center py-10 px-4 sm:px-8">
             {notification.message && (
-                <div className={`fixed top-5 right-5 z-50 flex items-center gap-3 p-4 rounded-lg shadow-lg text-white ${notification.type === 'success' ? 'bg-green-600' : 'bg-red-600'}`}>
+                <div className={`fixed top-5 right-5 z-50 flex items-center gap-3 p-4 shadow-lg text-white ${notification.type === 'success' ? 'bg-green-600' : 'bg-red-600'}`}>
                     {notification.type === 'success' ? <CheckCircle className="w-5 h-5" /> : <AlertCircle className="w-5 h-5" />}
                     <span>{notification.message}</span>
                 </div>
             )}
 
-            <div className="w-full max-w-5xl mx-auto">
+            <div className="w-full max-w-6xl mx-auto">
                 <header className="text-center mb-10">
                     <h1 className="text-4xl sm:text-5xl font-bold text-slate-900 mb-2">Student Grading System</h1>
                     <p className="text-lg text-slate-600">Upload an Excel file to automatically process and grade student marks.</p>
                 </header>
 
-                <main className="bg-white rounded-lg shadow-md border border-slate-200 p-8 mb-8">
+                <main className="bg-white shadow border border-slate-200 p-8 mb-8">
                     <div
-                        className={`relative border-2 border-dashed rounded-lg transition-colors duration-200 ${dragActive ? 'border-blue-500 bg-blue-50' : selectedFile ? 'border-green-500 bg-green-50' : 'border-slate-300 bg-slate-50 hover:border-slate-400'}`}
+                        className={`relative border-2 border-dashed transition-colors duration-200 ${dragActive ? 'border-blue-500 bg-blue-50' : selectedFile ? 'border-green-500 bg-green-50' : 'border-slate-300 bg-slate-50 hover:border-slate-400'}`}
                         onDragEnter={handleDragEnter} onDragLeave={handleDragLeave} onDragOver={handleDragEvent} onDrop={handleDrop}
                     >
                         <input id="file-input" ref={inputRef} type="file" accept=".xlsx,.xls" onChange={handleFileChangeEvent} className="hidden" />
@@ -170,21 +188,21 @@ const StudentGradingSystem = () => {
                     </div>
 
                     {selectedFile && (
-                        <div className="mt-6 p-3 bg-slate-100 rounded-md border border-slate-200 flex items-center justify-between">
+                        <div className="mt-6 p-3 bg-slate-100 border border-slate-200 flex items-center justify-between">
                             <span className="text-sm font-medium text-slate-800 truncate pr-4">{selectedFile.name}</span>
                             <button onClick={resetState} className="text-slate-500 hover:text-slate-800 font-semibold text-sm flex items-center gap-1 flex-shrink-0">
                                 <X className="w-4 h-4" /> Remove
                             </button>
                         </div>
                     )}
-                    
+
                     <div className="mt-6 space-y-4">
-                        <button onClick={handleUpload} disabled={!selectedFile || isUploading} className="w-full flex items-center justify-center gap-2 px-6 py-3 rounded-md font-semibold shadow-sm text-base bg-blue-600 text-white hover:bg-blue-700 disabled:bg-slate-300 disabled:cursor-not-allowed transition-colors">
+                        <button onClick={handleUpload} disabled={!selectedFile || isUploading} className="w-full flex items-center justify-center gap-2 px-6 py-3 font-semibold shadow-sm text-base bg-blue-600 text-white hover:bg-blue-700 disabled:bg-slate-300 disabled:cursor-not-allowed transition-colors">
                             {isUploading ? <><Loader2 className="w-5 h-5 animate-spin" /> Processing...</> : <><Upload className="w-5 h-5" /> Upload & Process File</>}
                         </button>
 
                         {downloadInfo && (
-                            <button onClick={handleDownload} className="w-full flex items-center justify-center gap-2 px-6 py-3 bg-green-600 text-white rounded-md font-semibold shadow-sm hover:bg-green-700 transition-colors">
+                            <button onClick={handleDownload} className="w-full flex items-center justify-center gap-2 px-6 py-3 bg-green-600 text-white font-semibold shadow-sm hover:bg-green-700 transition-colors">
                                 <Download className="w-5 h-5" /> Download Graded File
                             </button>
                         )}
@@ -203,8 +221,47 @@ const StudentGradingSystem = () => {
                                 <StatCard title="Grading Method" value={resultStats.grading_method?.replace(/_/g, ' ')} />
                             </div>
                         </section>
+                        
+                        {/* ⭐ CORRECTED: GRADE MARK RANGES SECTION */}
+                        <section>
+                            <h2 className="text-2xl font-semibold mb-4 text-slate-800 flex items-center gap-2"><ListOrdered /> Grade Mark Ranges</h2>
+                            {gradeRanges ? (
+                                <div className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-7 gap-4">
+                                    {gradeSystem.ranges.map(({ grade }) => (
+                                        gradeRanges[grade] && (
+                                            <div key={grade} className="border border-slate-200 bg-white p-4 text-center">
+                                                <p className={`mx-auto mb-2 w-10 h-10 flex items-center justify-center text-sm font-bold ${getGradePillStyle(grade)} rounded-full`}>{grade}</p>
+                                                <p className="text-lg font-semibold text-slate-800">
+                                                    {gradeRanges[grade].min === gradeRanges[grade].max
+                                                        ? gradeRanges[grade].min
+                                                        : `${gradeRanges[grade].min} - ${gradeRanges[grade].max}`
+                                                    }
+                                                </p>
+                                            </div>
+                                        )
+                                    ))}
+                                </div>
+                            ) : null}
+                        </section>
 
-                        <section className="bg-white rounded-lg shadow-md border border-slate-200">
+                        <section className="bg-white shadow border border-slate-200">
+                            <h2 className="text-2xl font-semibold text-slate-800 p-6 border-b border-slate-200 flex items-center gap-2">
+                                <BarChart3 /> Grade Distribution
+                            </h2>
+                            <div className="p-6">
+                                <ResponsiveContainer width="100%" height={350}>
+                                    <BarChart data={chartData} margin={{ top: 5, right: 20, left: -10, bottom: 5 }}>
+                                        <CartesianGrid strokeDasharray="3 3" stroke="#e2e8f0" />
+                                        <XAxis dataKey="grade" stroke="#64748b" fontSize={12} tickLine={false} axisLine={false} />
+                                        <YAxis allowDecimals={false} stroke="#64748b" fontSize={12} tickLine={false} axisLine={false} />
+                                        <Tooltip cursor={{ fill: '#f1f5f9' }} contentStyle={{ border: '1px solid #e2e8f0' }} />
+                                        <Bar dataKey="Number of Students" fill="#2563eb" barSize={40} />
+                                    </BarChart>
+                                </ResponsiveContainer>
+                            </div>
+                        </section>
+
+                        <section className="bg-white shadow border border-slate-200">
                             <h2 className="text-2xl font-semibold text-slate-800 p-6 border-b border-slate-200">Student Details</h2>
                             <div className="max-h-[60vh] overflow-y-auto">
                                 <table className="min-w-full divide-y divide-slate-200">
