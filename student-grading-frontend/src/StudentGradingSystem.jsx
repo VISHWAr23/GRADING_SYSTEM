@@ -12,6 +12,8 @@ const StudentGradingSystem = () => {
     const [resultDetails, setResultDetails] = useState([]);
     const [chartData, setChartData] = useState([]);
     const [gradeRanges, setGradeRanges] = useState(null); // ⭐Backend-driven range
+    const [expectedTotal, setExpectedTotal] = useState('');
+    const [subjectCode, setSubjectCode] = useState('');
     const [dragActive, setDragActive] = useState(false);
     const inputRef = useRef(null);
 
@@ -41,6 +43,8 @@ const StudentGradingSystem = () => {
         setResultDetails([]);
         setChartData([]);
         setGradeRanges(null);
+        setExpectedTotal('');
+        setSubjectCode('');
         if (inputRef.current) inputRef.current.value = '';
     };
 
@@ -74,16 +78,27 @@ const StudentGradingSystem = () => {
     const handleUpload = async () => {
         if (!selectedFile) return showNotification('Please select a file first', 'error');
 
+        if (!expectedTotal || isNaN(Number(expectedTotal)) || Number(expectedTotal) < 0) return showNotification('Please enter a valid expected total number of students', 'error');
+        if (!subjectCode || String(subjectCode).trim() === '') return showNotification('Please enter the subject code for verification', 'error');
+
 
         setIsUploading(true);
         const formData = new FormData();
         formData.append('file', selectedFile);
+        formData.append('expected_total_students', String(expectedTotal));
+        formData.append('subject_code', String(subjectCode).trim());
 
 
         try {
             const response = await fetch('http://localhost:5000/upload', { method: 'POST', body: formData });
             const result = await response.json();
-            if (!response.ok) throw new Error(result.error || 'Failed to upload file');
+            if (!response.ok) {
+                // If backend provided a list of found subjects, show it too
+                if (result && result.found_subjects) {
+                    throw new Error((result.error ? result.error + ' ' : '') + 'Found subjects: ' + result.found_subjects.join(', '));
+                }
+                throw new Error(result.error || 'Failed to upload file');
+            }
 
 
             setDownloadInfo({ fileId: result.file_id, filename: result.filename });
@@ -213,6 +228,21 @@ const StudentGradingSystem = () => {
 
 
                     <div className="mt-6 space-y-4">
+                        {selectedFile && (
+                            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                                <div>
+                                    <label className="block text-sm font-medium text-slate-700">Expected total students</label>
+                                    <input type="number" min="0" value={expectedTotal} onChange={(e) => setExpectedTotal(e.target.value)} placeholder="e.g. 45" className="mt-1 block w-full rounded-md border-slate-200 shadow-sm focus:border-blue-500 focus:ring-blue-500 p-2" />
+                                    <p className="text-xs text-slate-400 mt-1">Enter the expected number of students in the sheet for verification.</p>
+                                </div>
+
+                                <div>
+                                    <label className="block text-sm font-medium text-slate-700">Subject code</label>
+                                    <input type="text" value={subjectCode} onChange={(e) => setSubjectCode(e.target.value)} placeholder="e.g. CS101" className="mt-1 block w-full rounded-md border-slate-200 shadow-sm focus:border-blue-500 focus:ring-blue-500 p-2" />
+                                    <p className="text-xs text-slate-400 mt-1">Enter the subject code to verify the uploaded sheet matches.</p>
+                                </div>
+                            </div>
+                        )}
                         <button onClick={handleUpload} disabled={!selectedFile || isUploading} className="w-full flex items-center justify-center gap-2 px-6 py-3 font-semibold shadow-sm text-base bg-blue-600 text-white hover:bg-blue-700 disabled:bg-slate-300 disabled:cursor-not-allowed transition-colors">
                             {isUploading ? <><Loader2 className="w-5 h-5 animate-spin" /> Processing...</> : <><Upload className="w-5 h-5" /> Upload & Process File</>}
                         </button>
@@ -225,7 +255,7 @@ const StudentGradingSystem = () => {
                 </main>
 
 
-                {resultStats && resultDetails.length > 0 && 
+                {resultStats && resultDetails.length > 0 &&
                     <div className="space-y-8">
                         <section>
                             <h2 className="text-2xl font-semibold mb-4 text-slate-800 flex items-center gap-2"><BarChart3 /> Results Summary</h2>
