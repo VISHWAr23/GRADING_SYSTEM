@@ -33,18 +33,7 @@ def apply_fixed_grading(marks):
         return 'U'
     
     grades = marks.apply(get_grade)
-    valid_marks = marks.dropna()
-    normalized_values = pd.Series(np.nan, index=marks.index)
-    
-    if not valid_marks.empty:
-        min_mark, max_mark = valid_marks.min(), valid_marks.max()
-        mark_range = max_mark - min_mark
-        if mark_range > 0:
-            normalized_values.update(((valid_marks - min_mark) / mark_range).round(2))
-        else:
-            normalized_values.update(pd.Series(1.0, index=valid_marks.index))
-    
-    return grades, normalized_values
+    return grades
 
 def apply_relative_grading(marks):
     """
@@ -52,36 +41,33 @@ def apply_relative_grading(marks):
     This is applied ONLY to students who have passed (marks >= 50).
     """
     final_grades = pd.Series('U', index=marks.index)
-    final_normalized_values = pd.Series(np.nan, index=marks.index)
     
     passed_mask = (marks >= 50) & marks.notna()
     passed_marks = marks[passed_mask]
     
     if passed_marks.empty:
-        return final_grades, final_normalized_values
+        return final_grades
     
     if passed_marks.nunique() < 2:
-        passed_grades, passed_norm_vals = apply_fixed_grading(passed_marks)
+        passed_grades = apply_fixed_grading(passed_marks)
         final_grades.update(passed_grades)
-        final_normalized_values.update(passed_norm_vals)
-        return final_grades, final_normalized_values
+        return final_grades
     
     try:
         # --- Use raw marks directly for relative grading ---
         mean = passed_marks.mean()
         std_dev = passed_marks.std()
-        
-        
+
         if std_dev == 0:
             raise ValueError("Standard deviation is zero, cannot apply relative grading.")
-        
+
         # --- Define Grade Cutoffs based on Standard Deviations from the Mean ---
         o_cutoff      = mean + 1.65 * std_dev
         a_plus_cutoff = mean + 0.85 * std_dev
         a_cutoff      = mean
         b_plus_cutoff = mean - 0.9 * std_dev
         b_cutoff      = mean - 1.8 * std_dev
-        
+
         # Store cutoffs globally for grade range calculation
         global grade_cutoffs
         grade_cutoffs = {
@@ -91,7 +77,7 @@ def apply_relative_grading(marks):
             'b_plus_cutoff': b_plus_cutoff,
             'b_cutoff': b_cutoff
         }
-        
+
         # Assign Grades using explicit ranges for a proper bell curve
         conditions = [
             (passed_marks >= o_cutoff),
@@ -101,22 +87,18 @@ def apply_relative_grading(marks):
             (passed_marks >= b_cutoff),
         ]
         grade_choices = ['O', 'A+', 'A', 'B+', 'B']
-        
+
         passed_grades = pd.Series(np.select(conditions, grade_choices, default='C'), index=passed_marks.index)
         final_grades.update(passed_grades)
-        
-        normalized_result = ((passed_marks - passed_marks.min()) / (passed_marks.max() - passed_marks.min())).round(2)
-        final_normalized_values.update(normalized_result)
-        
+
     except Exception as e:
         print(f"Relative grading failed: {e}. Falling back to fixed grading.")
-        passed_grades, passed_norm_vals = apply_fixed_grading(passed_marks)
+        passed_grades = apply_fixed_grading(passed_marks)
         final_grades.update(passed_grades)
-        final_normalized_values.update(passed_norm_vals)
         # Clear cutoffs if relative grading failed
         grade_cutoffs = None
-    
-    return final_grades, final_normalized_values
+
+    return final_grades
 
 def calculate_grade_ranges(df):
     """Calculates the min-max mark range for each grade present in the DataFrame."""
@@ -178,36 +160,83 @@ grade_cutoffs = None  # Global variable to store cutoffs
 @app.route('/upload', methods=['POST'])
 def upload_file():
     try:
+        # Require expected values before processing
+        expected_total = request.form.get('expected_total_students')
+        expected_subject = request.form.get('subject_code')
+
+        if expected_total is None or expected_subject is None:
+            return jsonify({'error': 'Please provide expected_total_students and subject_code in the form data before uploading.'}), 400
+
+        # Validate expected_total is an integer
+        try:
+            expected_total = int(str(expected_total).strip())
+            if expected_total < 0:
+                raise ValueError()
+        except Exception:
+            return jsonify({'error': 'expected_total_students must be a non-negative integer'}), 400
+
+        expected_subject = str(expected_subject).strip()
+
         if 'file' not in request.files:
             return jsonify({'error': 'No file part in the request'}), 400
-        
+
         file = request.files['file']
-        
+
         if file.filename == '':
             return jsonify({'error': 'No file selected for uploading'}), 400
-        
+
         if not file.filename.lower().endswith(('.xlsx', '.xls')):
             return jsonify({'error': 'Invalid file format. Please upload an Excel file.'}), 400
-        
+
         df = pd.read_excel(file)
-        
+
+        # Basic required columns
         if 'Marks' not in df.columns:
             return jsonify({'error': 'Excel file must contain a "Marks" column'}), 400
-        
+
         name_col_found = next((col for col in ['Name', 'Student Name', 'Student', 'name'] if col in df.columns), None)
         if not name_col_found:
             return jsonify({'error': 'Excel file must contain a name column (e.g., "Name")'}), 400
-        
+
         df.rename(columns={name_col_found: 'Name'}, inplace=True)
         df['Marks'] = pd.to_numeric(df['Marks'], errors='coerce')
-        
+
+        # Attempt to find a subject column (case-insensitive 'subject' in the column name)
+        subject_col_found = next((col for col in df.columns if 'subject' in col.lower()), None)
+        if subject_col_found is None:
+            return jsonify({'error': 'Excel file must contain a subject column (e.g., "Subject Code") for verification.'}), 400
+
+        # Extract unique subject codes from the sheet (non-empty)
+        unique_subjects = df[subject_col_found].dropna().unique()
+        if len(unique_subjects) == 0:
+            return jsonify({'error': 'No subject code value found in the subject column for verification.'}), 400
+        if len(unique_subjects) > 1:
+            # Convert subjects to strings for JSON serializable response
+            found_subjects = [str(x) for x in unique_subjects]
+            return jsonify({
+                'error': 'Multiple different subject codes found in the sheet. Please ensure the sheet contains a single subject.',
+                'found_subjects': found_subjects
+            }), 400
+
+        sheet_subject = str(unique_subjects[0]).strip()
+        if sheet_subject.lower() != expected_subject.lower():
+            return jsonify({'error': f'Subject code mismatch: expected "{expected_subject}", found "{sheet_subject}". Please correct and retry.'}), 400
+
+        # Verify student count
+        file_student_count = int(df['Name'].dropna().shape[0])
+        if file_student_count != expected_total:
+            return jsonify({'error': f'Student count mismatch: expected {expected_total}, found {file_student_count}. Please correct and retry.'}), 400
+
+        # Proceed with existing grading logic now that verification passed
         valid_students_count = len(df.dropna(subset=['Marks']))
         grading_method = 'relative_grading' if valid_students_count > 30 else 'fixed_grading'
         grading_function = apply_relative_grading if grading_method == 'relative_grading' else apply_fixed_grading
-        
-        df['Grade'], df['Normalized_Value'] = grading_function(df['Marks'])
+
+        # Apply grading (functions return a Series of grade letters)
+        df['Grade'] = grading_function(df['Marks'])
         df['Grade_Points'] = df['Grade'].map(GRADE_POINTS_MAP).fillna(0).astype(int)
-        
+
+        # Summary statistics use raw marks
         valid_marks = df['Marks'].dropna()
         summary_stats = {
             'count': int(valid_marks.count()),
@@ -217,22 +246,25 @@ def upload_file():
             'grading_method': grading_method,
             'grade_ranges': calculate_grade_ranges(df)
         }
-        
-        display_cols = ['Name', 'Marks', 'Grade', 'Grade_Points', 'Normalized_Value']
+
+        display_cols = ['Name', 'Marks', 'Grade', 'Grade_Points']
         df_display = df[display_cols].copy()
         df_display['Marks'] = df_display['Marks'].astype(object).where(df_display['Marks'].notna(), None)
-        df_display['Normalized_Value'] = df_display['Normalized_Value'].astype(object).where(df_display['Normalized_Value'].notna(), None)
         student_details = df_display.to_dict(orient='records')
-        
+
+        # Remove Normalized_Value column if present before writing output Excel
+        if 'Normalized_Value' in df.columns:
+            df = df.drop(columns=['Normalized_Value'])
+
         output = io.BytesIO()
         df.to_excel(output, index=False, sheet_name='Graded_Results', engine='openpyxl')
         output.seek(0)
-        
+
         original_filename = secure_filename(file.filename)
         output_filename = f"{os.path.splitext(original_filename)[0]}_graded.xlsx"
-        
+
         file_id = str(uuid.uuid4())
-        
+
         # Store DataFrame, file data, and grading method
         processed_files[file_id] = {
             'data': output.getvalue(), 
@@ -240,8 +272,7 @@ def upload_file():
             'dataframe': df,
             'grading_method': grading_method
         }
-        
-        
+
         return jsonify({
             'message': 'File processed successfully',
             'file_id': file_id,
