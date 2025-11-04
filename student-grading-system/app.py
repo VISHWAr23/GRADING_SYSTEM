@@ -11,12 +11,17 @@ from datetime import datetime
 
 # --- PDF Imports ---
 from reportlab.lib.pagesizes import letter
-from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer, KeepTogether
+from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer, KeepTogether, Image
 from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
 from reportlab.lib import colors
 from reportlab.lib.units import inch
 from reportlab.lib.enums import TA_CENTER, TA_RIGHT, TA_LEFT 
 # -------------------
+
+# --- Matplotlib for bar chart generation in PDF ---
+import matplotlib
+matplotlib.use('Agg')
+import matplotlib.pyplot as plt
 
 app = Flask(__name__)
 CORS(app)
@@ -218,38 +223,35 @@ def generate_pdf_from_data(df_export, summary_stats, academic_details, grade_poi
     # --- 2. Course Details (Redesigned 5-Column Table) ---
     total_width = doc.width
     
+    # Use a tight 5-column layout so the "Generated On" label and date sit on the same line
     details_data = [
         [
-            Paragraph("Academic Year", bold_left), ':', Paragraph(academic_details['academic_year'], normal_left), 
-            Paragraph("Date", bold_left), Paragraph(current_date, normal_right)
+            Paragraph("Academic Year", bold_left), ':', Paragraph(academic_details['academic_year'], normal_left),
+            Paragraph("Generated On:", bold_left), Paragraph(current_date, normal_right)
         ],
         [
-            Paragraph("Subject Code", bold_left), ':', Paragraph(academic_details['subject_code'], normal_left), 
-            '', ''
+            Paragraph("Course code", bold_left), ':', Paragraph(academic_details['subject_code'], normal_left), '', ''
         ],
         [
-            Paragraph("Subject Name", bold_left), ':', Paragraph(academic_details['subject_name'], normal_left), 
-            '', ''
+            Paragraph("Course name", bold_left), ':', Paragraph(academic_details['subject_name'], normal_left), '', ''
         ],
         [
-            Paragraph("Total Number of Students", bold_left), ':', Paragraph(str(academic_details['expected_total_students']), normal_left), 
-            '', ''
+            Paragraph("Total Number of Students", bold_left), ':', Paragraph(str(academic_details['expected_total_students']), normal_left), '', ''
         ]
     ]
 
-    # Width distribution: 25% (Label), 1% (Colon), 38% (Value), 10% (Date Label), 26% (Date Value - reduced gap)
-    detail_col_widths = [total_width * 0.25, total_width * 0.01, total_width * 0.38, total_width * 0.10, total_width * 0.26]
+    # Width distribution: Label (25%), Colon (2%), Value (33%), Generated Label (18%), Generated Value (22%)
+    # Increase the Generated Label column so the text doesn't wrap; use a non-breaking space in the label.
+    detail_col_widths = [total_width * 0.25, total_width * 0.02, total_width * 0.33, total_width * 0.18, total_width * 0.22]
     detail_table = Table(details_data, colWidths=detail_col_widths)
 
     detail_table.setStyle(TableStyle([
-        ('ALIGN', (0, 0), (-1, -1), 'LEFT'), 
-        ('ALIGN', (4, 0), (4, 0), 'RIGHT'),
+        ('ALIGN', (0, 0), (-1, -1), 'LEFT'),
+        ('ALIGN', (3, 0), (3, -1), 'LEFT'),
+        ('ALIGN', (4, 0), (4, -1), 'RIGHT'),
         ('LEFTPADDING', (0, 0), (-1, -1), 0),
         ('RIGHTPADDING', (0, 0), (-1, -1), 0),
         ('VALIGN', (0, 0), (-1, -1), 'TOP'),
-        ('SPAN', (3, 1), (4, 1)),
-        ('SPAN', (3, 2), (4, 2)),
-        ('SPAN', (3, 3), (4, 3)),
         ('BOTTOMPADDING', (0, 0), (-1, -1), 4),
         ('TOPPADDING', (0, 0), (-1, -1), 4),
     ]))
@@ -321,17 +323,19 @@ def generate_pdf_from_data(df_export, summary_stats, academic_details, grade_poi
     summary_flowables.append(Paragraph(f'Grading Summary ({summary_stats["grading_method"].replace("_", " ").title()})', bold_left))
     summary_flowables.append(Spacer(1, 0.1 * inch))
 
+    # Include Count as the last column in the PDF summary table
     summary_data = [
-        [Paragraph('<b>Grade</b>', styles['Normal']), Paragraph('<b>Mark Range</b>', styles['Normal'])]
+        [Paragraph('<b>Grade</b>', styles['Normal']), Paragraph('<b>Mark Range</b>', styles['Normal']), Paragraph('<b>Count</b>', styles['Normal'])]
     ]
     # Sort by grade points
     sorted_grades = sorted(summary_stats['grade_ranges'].keys(), key=lambda x: grade_point_map.get(x, -1), reverse=True)
     for grade in sorted_grades:
-        summary_data.append([grade, summary_stats['grade_ranges'][grade]])
+        count_val = summary_stats.get('grade_counts', {}).get(grade, 0)
+        summary_data.append([grade, summary_stats['grade_ranges'][grade], str(count_val)])
         
-    # Set summary table to use a fixed portion of the page width
-    summary_table_width = doc.width * 0.5
-    summary_col_widths = [summary_table_width/2] * 2
+    # Set summary table to use a fixed portion of the page width and include three columns
+    summary_table_width = doc.width * 0.6
+    summary_col_widths = [summary_table_width/3] * 3
     summary_table = Table(summary_data, colWidths=summary_col_widths)
     
     summary_table.setStyle(TableStyle([
@@ -348,6 +352,43 @@ def generate_pdf_from_data(df_export, summary_stats, academic_details, grade_poi
     
     summary_flowables.append(summary_table)
 
+    # --- 2.a Generate a bar chart image for grade counts and embed after the summary table ---
+    try:
+        grade_counts = summary_stats.get('grade_counts', {}) if summary_stats else {}
+        if grade_counts:
+            # Order grades by grade points so bars align with table ordering
+            chart_grades = sorted(grade_counts.keys(), key=lambda x: grade_point_map.get(x, -1), reverse=True)
+            chart_counts = [grade_counts.get(g, 0) for g in chart_grades]
+
+            fig, ax = plt.subplots(figsize=(6, 2.5))
+            ax.bar(chart_grades, chart_counts, color='#003366')
+            ax.set_xlabel('Grade')
+            ax.set_ylabel('Count')
+            ax.set_title('Grade Distribution')
+            ax.set_ylim(0, max(chart_counts) * 1.25 if chart_counts and max(chart_counts) > 0 else 1)
+            # Annotate bars
+            for i, v in enumerate(chart_counts):
+                ax.text(i, v + 0.05 * max(1, max(chart_counts)), str(v), ha='center', va='bottom', fontsize=8)
+
+            fig.tight_layout()
+            img_buf = io.BytesIO()
+            fig.savefig(img_buf, format='png', dpi=150)
+            plt.close(fig)
+            img_buf.seek(0)
+
+            # Embed into PDF; make image larger and add spacing before/after
+            chart_width = doc.width * 0.75
+            chart_height = chart_width * 0.45
+            rl_img = Image(img_buf, width=chart_width, height=chart_height)
+            rl_img.hAlign = 'CENTER'
+            # Larger gap before image
+            summary_flowables.append(Spacer(1, 0.15 * inch))
+            summary_flowables.append(rl_img)
+            # Add extra gap after the image and an additional larger gap to separate from signatures
+            summary_flowables.append(Spacer(1, 0.25 * inch))
+    except Exception as e:
+        print(f"Chart generation skipped: {e}")
+
     # Use KeepTogether to ensure the Summary section stays together
     Story.append(KeepTogether(summary_flowables))
     
@@ -359,7 +400,7 @@ def generate_pdf_from_data(df_export, summary_stats, academic_details, grade_poi
         [
             Paragraph("Generated By", sig_style), 
             Paragraph("Verified By", sig_style), 
-            Paragraph("Dean Academic", sig_style), 
+            Paragraph("Dean (Academic)", sig_style), 
             Paragraph("Principal", sig_style)
         ],
     ]
@@ -433,11 +474,36 @@ def upload_file():
         if 'Marks' not in df.columns:
             return jsonify({'error': 'Excel file must contain a "Marks" column'}), 400
 
+        # Find a name column (various possible headings)
         name_col_found = next((col for col in ['Name', 'Student Name', 'Student', 'name'] if col in df.columns), None)
         if not name_col_found:
             return jsonify({'error': 'Excel file must contain a name column (e.g., "Name")'}), 400
 
         df.rename(columns={name_col_found: 'Name'}, inplace=True)
+
+        # Find a register number column (preferred unique identifier). Be forgiving on column naming but require it.
+        register_col_found = next((col for col in df.columns if 'register' in str(col).lower()), None)
+        if not register_col_found:
+            return jsonify({'error': 'Excel file must contain a Register Number column (e.g., "Register Number" or a column containing the word "register").'}), 400
+
+        # Standardize register column name
+        if register_col_found != 'Register Number':
+            df.rename(columns={register_col_found: 'Register Number'}, inplace=True)
+
+        # Normalize Register Number values (trim whitespace) and detect duplicates
+        df['Register Number'] = df['Register Number'].astype(str).str.strip()
+        # Treat empty strings as missing
+        df.loc[df['Register Number'] == '', 'Register Number'] = pd.NA
+
+        dup_regs = df['Register Number'].dropna()
+        duplicated_vals = dup_regs[dup_regs.duplicated(keep=False)].unique()
+        if len(duplicated_vals) > 0:
+            # Provide up to 20 duplicates in the message to avoid huge responses
+            sample_dups = list(duplicated_vals[:20])
+            return jsonify({
+                'error': 'Duplicate Register Number(s) found in the uploaded sheet. Please ensure each student has a unique Register Number before retrying.',
+                'duplicates': sample_dups
+            }), 400
         df['Marks'] = pd.to_numeric(df['Marks'], errors='coerce')
 
         # Attempt to find a subject column (case-insensitive 'subject' in the column name)
@@ -445,61 +511,87 @@ def upload_file():
         if subject_col_found is None:
             print("Warning: Subject column not found in uploaded file. Skipping subject verification.")
         else:
-            # Extract unique subject codes from the sheet (non-empty)
+            # Extract unique course codes from the sheet (non-empty)
             unique_subjects = df[subject_col_found].dropna().astype(str).str.strip().unique()
             if len(unique_subjects) == 0:
-                print("Warning: No subject code value found for verification. Skipping.")
+                print("Warning: No course code value found for verification. Skipping.")
             elif len(unique_subjects) > 1:
                 found_subjects = unique_subjects.tolist()
                 return jsonify({
-                    'error': 'Multiple different subject codes found in the sheet. Please ensure the sheet contains a single subject.',
+                    'error': 'Multiple different course codes found in the sheet. Please ensure the sheet contains a single course code.',
                     'found_subjects': found_subjects
                 }), 400
             
             sheet_subject = unique_subjects[0] if len(unique_subjects) == 1 else None
             if sheet_subject and sheet_subject.lower() != expected_subject.lower():
-                 return jsonify({'error': f'Subject code mismatch: expected "{expected_subject}", found "{sheet_subject}". Please correct and retry.'}), 400
+                 return jsonify({'error': f'Course code mismatch: expected "{expected_subject}", found "{sheet_subject}". Please correct and retry.'}), 400
 
 
-        # Verify student count
-        file_student_count = int(df['Name'].dropna().shape[0])
+        # Verify student count using unique Register Number (names may duplicate)
+        file_student_count = int(df['Register Number'].dropna().nunique())
         if file_student_count != expected_total:
-            return jsonify({'error': f'Student count mismatch: expected {expected_total}, found {file_student_count}. Please correct and retry.'}), 400
+            return jsonify({'error': f'Student count mismatch: expected {expected_total}, found {file_student_count} (unique Register Numbers). Please correct and retry.'}), 400
 
         # Proceed with existing grading logic now that verification passed
-        valid_students_count = len(df.dropna(subset=['Marks']))
+        # Count valid students by unique Register Number with non-null marks
+        valid_students_count = int(df.dropna(subset=['Marks'])['Register Number'].nunique())
         grading_method = 'relative_grading' if valid_students_count > 30 else 'fixed_grading'
         grading_function = apply_relative_grading if grading_method == 'relative_grading' else apply_fixed_grading
 
         # Apply grading (functions return a Series of grade letters)
         df['Grade'] = grading_function(df['Marks'])
         df['Grade_Points'] = df['Grade'].map(GRADE_POINTS_MAP).fillna(0).astype(int)
-        
+
         # --- Generate Grading Summary ---
         continuous_ranges = calculate_continuous_grade_ranges(df, grading_method)
-        
+
         # Summary statistics use raw marks
         valid_marks = df['Marks'].dropna()
+        # Count students per grade using unique Register Number as the unit (avoid duplicate names affecting counts)
+        try:
+            grades_per_register = df.dropna(subset=['Register Number']).groupby('Register Number')['Grade'].first()
+            grade_counts_series = grades_per_register.value_counts()
+            # Ensure all grades present in map are included with zero default
+            grade_counts = {g: int(grade_counts_series.get(g, 0)) for g in GRADE_POINTS_MAP.keys()}
+        except Exception:
+            # Fallback to simple row counts if grouping fails for any reason
+            grade_counts = {g: int(df['Grade'].eq(g).sum()) for g in GRADE_POINTS_MAP.keys()}
+
         summary_stats = {
-            'count': int(valid_marks.count()),
+            'count': int(df.dropna(subset=['Marks'])['Register Number'].nunique()),
             'average': round(valid_marks.mean(), 2) if not valid_marks.empty else 0,
             'max': int(valid_marks.max()) if not valid_marks.empty else 0,
             'min': int(valid_marks.min()) if not valid_marks.empty else 0,
             'grading_method': grading_method,
-            'grade_ranges': continuous_ranges 
+            'grade_ranges': continuous_ranges,
+            'grade_counts': grade_counts
         }
 
-        # --- Student Details for Frontend Display (keep Grade_Points here) ---
-        display_cols = ['Name', 'Marks', 'Grade', 'Grade_Points']
+        # --- Student Details for Frontend Display (keep Grade_Points here). Include Register Number to uniquely identify students ---
+        display_cols = ['Register Number', 'Name', 'Marks', 'Grade', 'Grade_Points']
+        # Only include columns that actually exist in the dataframe (defensive)
+        display_cols = [c for c in display_cols if c in df.columns]
         df_display = df[display_cols].copy()
         df_display['Marks'] = df_display['Marks'].astype(object).where(df_display['Marks'].notna(), None)
         student_details = df_display.to_dict(orient='records')
         # ---------------------------------------------------------------------
 
-        # Remove Normalized_Value column if present before writing output Excel
+        # Remove Normalized_Value and Grade_Points columns if present before writing output Excel
         df_export = df.copy()
         if 'Normalized_Value' in df_export.columns:
             df_export = df_export.drop(columns=['Normalized_Value'])
+            
+        # Do not include Grade_Points in the output Excel file (keep it for internal/frontend display only)
+        if 'Grade_Points' in df_export.columns:
+            df_export = df_export.drop(columns=['Grade_Points'])
+
+        # Rename any input column named 'Subject Code' (case-insensitive) to 'Course code'
+        rename_map = {}
+        for col in df_export.columns:
+            if str(col).strip().lower() == 'subject code':
+                rename_map[col] = 'Course code'
+        if rename_map:
+            df_export = df_export.rename(columns=rename_map)
 
         student_cols = df_export.columns.tolist()
         num_student_cols = len(student_cols)
@@ -528,11 +620,11 @@ def upload_file():
         header_rows.append(details_row_1)
 
         details_row_2 = empty_pad_series.copy()
-        details_row_2[student_cols[0]] = f"Subject Code: {expected_subject.strip()}" 
+        details_row_2[student_cols[0]] = f"Course code: {expected_subject.strip()}" 
         header_rows.append(details_row_2)
         
         details_row_3 = empty_pad_series.copy()
-        details_row_3[student_cols[0]] = f"Subject Name: {subject_name.strip()}"
+        details_row_3[student_cols[0]] = f"Course name: {subject_name.strip()}"
         header_rows.append(details_row_3)
         
         details_row_4 = empty_pad_series.copy()
@@ -557,19 +649,24 @@ def upload_file():
         summary_title = empty_pad_series.copy()
         summary_title[student_cols[0]] = f'--- Grading Summary ({grading_method.replace("_", " ").title()}) ---'
         summary_rows.append(summary_title)
-        
-        # Add header for the summary table (Grade and Mark Range)
+        # Adjust starting index to ensure space for 3 columns (Grade, Mark Range, Count)
+        summary_start_idx = max(0, min(3, num_student_cols - 3))
+
+        # Add header for the summary table (Grade, Mark Range and Count)
         summary_header = empty_pad_series.copy()
         summary_header[student_cols[summary_start_idx]] = 'Grade'
         summary_header[student_cols[summary_start_idx + 1]] = 'Mark Range'
+        summary_header[student_cols[summary_start_idx + 2]] = 'Count'
         summary_rows.append(summary_header)
-        
-        # Add actual range data
+
+        # Add actual range data and counts
         for grade in sorted(continuous_ranges.keys(), key=lambda x: GRADE_POINTS_MAP.get(x, -1), reverse=True):
             range_str = continuous_ranges[grade]
             summary_row = empty_pad_series.copy()
             summary_row[student_cols[summary_start_idx]] = grade
             summary_row[student_cols[summary_start_idx + 1]] = range_str
+            # Use the grade_counts computed earlier
+            summary_row[student_cols[summary_start_idx + 2]] = str(summary_stats.get('grade_counts', {}).get(grade, 0))
             summary_rows.append(summary_row)
 
         summary_data_df = pd.DataFrame(summary_rows)
