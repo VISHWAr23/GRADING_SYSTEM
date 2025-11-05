@@ -269,51 +269,106 @@ def generate_pdf_from_data(df_export, summary_stats, academic_details, grade_poi
     if 'Grade_Points' in pdf_df.columns:
         pdf_df = pdf_df.drop(columns=['Grade_Points'])
         
-    data = [pdf_df.columns.tolist()] 
+    # Build table data using Paragraphs so that long text wraps inside cells
+    header_style = ParagraphStyle('TableHeader', parent=styles['Normal'], fontName='Helvetica-Bold', fontSize=9, alignment=TA_CENTER, textColor=colors.whitesmoke)
+    cell_style_left = ParagraphStyle('CellLeft', parent=styles['Normal'], fontName='Helvetica', fontSize=8, alignment=TA_LEFT)
+    cell_style_center = ParagraphStyle('CellCenter', parent=styles['Normal'], fontName='Helvetica', fontSize=8, alignment=TA_CENTER)
+    cell_style_right = ParagraphStyle('CellRight', parent=styles['Normal'], fontName='Helvetica', fontSize=8, alignment=TA_RIGHT)
+
+    # Create header row as Paragraphs (to allow styling and wrapping)
+    columns = pdf_df.columns.tolist()
+    data = [[Paragraph(str(col), header_style) for col in columns]]
+
+    # Convert each cell to a Paragraph (wrap-enabled)
     for _, row in pdf_df.iterrows():
-        new_row = []
-        for item in row:
+        row_cells = []
+        for col in columns:
+            item = row.get(col, '')
             if pd.isna(item):
-                new_row.append('')
+                text = ''
             elif isinstance(item, (int, float)):
-                 new_row.append(int(item) if item == int(item) else round(item, 2))
+                # keep integers without .0
+                text = str(int(item) if float(item).is_integer() else round(float(item), 2))
             else:
-                 new_row.append(str(item))
-        data.append(new_row)
-    
-    # Recalculate column widths based on the reduced number of columns
-    total_cols = len(data[0])
-    
-    # Define widths for standard columns: Name, Marks, Grade (Total 50%)
-    # Assuming original columns were: Name, Marks, Grade, Grade_Points, [Subject, etc.]
-    # New Standard: Name(25), Marks(15), Grade(10) = 50%
-    standard_cols = ['Name', 'Marks', 'Grade']
-    
-    # Calculate widths for the remaining columns dynamically
-    remaining_cols = total_cols - len(standard_cols)
-    remaining_width_percent = 100 - 50 # 50% left for other columns
-    
-    percentage_widths = [25, 15, 10]
-    
-    if remaining_cols > 0:
-        width_per_remaining_col = remaining_width_percent / remaining_cols
-        percentage_widths = percentage_widths + ([width_per_remaining_col] * remaining_cols)
-    
-    col_widths = [doc.width * (w / 100) for w in percentage_widths]
-    
-    table = Table(data, colWidths=col_widths)
-    
-    table.setStyle(TableStyle([
+                text = str(item)
+
+            # Choose alignment/style based on column name
+            col_key = str(col).strip().lower()
+            if 'name' in col_key or 'department' in col_key or 'course' in col_key or 'subject' in col_key:
+                para = Paragraph(text, cell_style_left)
+            elif 'mark' in col_key or 'marks' in col_key:
+                para = Paragraph(text, cell_style_center)
+            elif 'register' in col_key or 'grade' in col_key:
+                para = Paragraph(text, cell_style_center)
+            else:
+                para = Paragraph(text, cell_style_left)
+
+            row_cells.append(para)
+
+        data.append(row_cells)
+
+    # Determine column width proportions. Reduce Register Number & Grade; increase Name.
+    # Base mapping (fractions of total width)
+    preferred = {
+        'register number': 0.12,
+        'name': 0.40,
+        'marks': 0.07,
+        'course code': 0.15,
+        'department': 0.15,
+        'grade': 0.07
+    }
+
+    # Assign widths for present columns using preferred mapping; distribute leftover space equally
+    total_width = doc.width
+    assigned = []
+    remaining_cols = []
+    used_frac = 0.0
+    for col in columns:
+        key = str(col).strip().lower()
+        if key in preferred:
+            assigned.append(preferred[key])
+            used_frac += preferred[key]
+        else:
+            assigned.append(None)
+            remaining_cols.append(col)
+
+    remaining_frac = max(0.0, 1.0 - used_frac)
+    per_other = remaining_frac / (len(remaining_cols) if remaining_cols else 1)
+
+    col_widths = []
+    for frac in assigned:
+        if frac is None:
+            col_widths.append(total_width * per_other)
+        else:
+            col_widths.append(total_width * frac)
+
+    table = Table(data, colWidths=col_widths, repeatRows=1)
+
+    # Table styling: header background, grid, padding; alignments largely handled by Paragraph styles
+    table_style = TableStyle([
         ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#003366')),
         ('TEXTCOLOR', (0, 0), (-1, 0), colors.whitesmoke),
-        ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
         ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
         ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
         ('FONTSIZE', (0, 0), (-1, -1), 8),
         ('BOTTOMPADDING', (0, 0), (-1, 0), 6),
+        ('LEFTPADDING', (0, 0), (-1, -1), 4),
+        ('RIGHTPADDING', (0, 0), (-1, -1), 4),
+        ('TOPPADDING', (0, 0), (-1, -1), 4),
+        ('BOTTOMPADDING', (0, 0), (-1, -1), 4),
         ('GRID', (0, 0), (-1, -1), 0.5, colors.black)
-    ]))
-    
+    ])
+
+    # Ensure numeric-like columns are centered visually
+    for idx, col in enumerate(columns):
+        key = str(col).strip().lower()
+        if 'mark' in key or 'marks' in key or 'grade' in key or 'register' in key:
+            table_style.add('ALIGN', (idx, 1), (idx, -1), 'CENTER')
+        else:
+            table_style.add('ALIGN', (idx, 1), (idx, -1), 'LEFT')
+
+    table.setStyle(table_style)
+
     Story.append(table)
     Story.append(Spacer(1, 0.2 * inch))
     
