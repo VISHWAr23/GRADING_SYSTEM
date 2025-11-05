@@ -373,7 +373,7 @@ def generate_pdf_from_data(df_export, summary_stats, academic_details, grade_poi
     Story.append(Spacer(1, 0.2 * inch))
     
     # --- 4. Grading Summary Table (MODIFIED: Grade Point removed, Title bold) ---
-    
+    Hii = {}
     summary_flowables = []
     summary_flowables.append(Paragraph(f'Grading Summary ({summary_stats["grading_method"].replace("_", " ").title()})', bold_left))
     summary_flowables.append(Spacer(1, 0.1 * inch))
