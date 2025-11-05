@@ -1,7 +1,7 @@
 import React, { useState, useRef } from 'react';
 import { Upload, Download, CheckCircle, AlertCircle, FileText, Loader2, X, BarChart3, ListOrdered } from 'lucide-react';
 import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, LabelList } from 'recharts';
-
+import necLogo from './assets/images/nec-logo.png';
 
 const StudentGradingSystem = () => {
     const [selectedFile, setSelectedFile] = useState(null);
@@ -12,6 +12,12 @@ const StudentGradingSystem = () => {
     const [resultDetails, setResultDetails] = useState([]);
     const [chartData, setChartData] = useState([]);
     const [gradeRanges, setGradeRanges] = useState(null); // ⭐Backend-driven range
+
+    // ⭐ NEW STATE VARIABLES ADDED (Already present)
+    const [academicYear, setAcademicYear] = useState('');
+    const [subjectName, setSubjectName] = useState('');
+    // END NEW STATE VARIABLES
+
     const [expectedTotal, setExpectedTotal] = useState('');
     const [subjectCode, setSubjectCode] = useState('');
     const [dragActive, setDragActive] = useState(false);
@@ -43,6 +49,10 @@ const StudentGradingSystem = () => {
         setResultDetails([]);
         setChartData([]);
         setGradeRanges(null);
+        // ⭐ RESET NEW STATE VARIABLES
+        setAcademicYear('');
+        setSubjectName('');
+        // END RESET NEW STATE VARIABLES
         setExpectedTotal('');
         setSubjectCode('');
         if (inputRef.current) inputRef.current.value = '';
@@ -74,17 +84,25 @@ const StudentGradingSystem = () => {
     };
 
 
-    // ⭐ Updated: Fetch grade ranges from backend after upload
     const handleUpload = async () => {
         if (!selectedFile) return showNotification('Please select a file first', 'error');
 
+        // ⭐ VALIDATIONS
+        if (!academicYear || String(academicYear).trim() === '') return showNotification('Please enter a valid academic year', 'error');
+        if (!subjectName || String(subjectName).trim() === '') return showNotification('Please enter a valid course name', 'error');
+
         if (!expectedTotal || isNaN(Number(expectedTotal)) || Number(expectedTotal) < 0) return showNotification('Please enter a valid expected total number of students', 'error');
-        if (!subjectCode || String(subjectCode).trim() === '') return showNotification('Please enter the subject code for verification', 'error');
+        if (!subjectCode || String(subjectCode).trim() === '') return showNotification('Please enter the course code for verification', 'error');
 
 
         setIsUploading(true);
         const formData = new FormData();
         formData.append('file', selectedFile);
+
+        // ⭐ FIELDS ADDED TO formData
+        formData.append('academic_year', String(academicYear).trim());
+        formData.append('subject_name', String(subjectName).trim());
+
         formData.append('expected_total_students', String(expectedTotal));
         formData.append('subject_code', String(subjectCode).trim());
 
@@ -93,7 +111,6 @@ const StudentGradingSystem = () => {
             const response = await fetch('http://localhost:5000/upload', { method: 'POST', body: formData });
             const result = await response.json();
             if (!response.ok) {
-                // If backend provided a list of found subjects, show it too
                 if (result && result.found_subjects) {
                     throw new Error((result.error ? result.error + ' ' : '') + 'Found subjects: ' + result.found_subjects.join(', '));
                 }
@@ -120,7 +137,7 @@ const StudentGradingSystem = () => {
             setChartData(formattedChartData);
 
 
-            // ⭐ Fetch grade ranges from backend
+            // Fetch grade ranges from backend
             fetch(`http://localhost:5000/grade-ranges/${result.file_id}`)
                 .then(res => res.json())
                 .then(data => {
@@ -138,6 +155,7 @@ const StudentGradingSystem = () => {
     };
 
 
+    // --- EXISTING EXCEL DOWNLOAD ---
     const handleDownload = async () => {
         if (!downloadInfo) return showNotification('No file available for download.', 'error');
         try {
@@ -152,11 +170,69 @@ const StudentGradingSystem = () => {
             link.click();
             link.remove();
             window.URL.revokeObjectURL(url);
-            showNotification('File downloaded successfully!', 'success');
+            showNotification('Excel file downloaded successfully!', 'success');
         } catch (error) {
             showNotification(error.message, 'error');
         }
     };
+
+    // --- TEMPLATE DOWNLOAD ---
+    const handleDownloadTemplate = (templateName = 'template.xlsx') => {
+        try {
+            // Vite serves files from `public/` at the base URL. Use BASE_URL to be safe in prod/dev.
+            const base = (import.meta && import.meta.env && import.meta.env.BASE_URL) ? import.meta.env.BASE_URL : '/';
+            const href = `${base}${templateName}`;
+            const link = document.createElement('a');
+            link.href = href;
+            link.download = templateName;
+            document.body.appendChild(link);
+            link.click();
+            link.remove();
+            showNotification('Template download started', 'success');
+        } catch (error) {
+            showNotification('Failed to start template download', 'error');
+        }
+    };
+    // ----------------------------------
+    // --- NEW PDF DOWNLOAD FUNCTION ---
+    const handleDownloadPdf = async () => {
+        if (!downloadInfo) return showNotification('No file available for PDF download.', 'error');
+        try {
+            // ⭐ Call the new backend endpoint
+            const response = await fetch(`http://localhost:5000/download-pdf/${downloadInfo.fileId}`);
+
+            if (!response.ok) {
+                const errorResult = await response.json();
+                throw new Error(errorResult.error || 'PDF download failed from server.');
+            }
+
+            const blob = await response.blob();
+            const contentDisposition = response.headers.get('Content-Disposition');
+
+            // Extract filename from Content-Disposition header if available, otherwise default
+            let filename = `graded_report_${downloadInfo.fileId.substring(0, 8)}.pdf`;
+            if (contentDisposition) {
+                const match = contentDisposition.match(/filename="(.+\.pdf)"/i);
+                if (match && match[1]) {
+                    filename = match[1];
+                }
+            }
+
+            const url = window.URL.createObjectURL(blob);
+            const link = document.createElement('a');
+            link.href = url;
+            link.download = filename; // Use the extracted or default filename
+            document.body.appendChild(link);
+            link.click();
+            link.remove();
+            window.URL.revokeObjectURL(url);
+            showNotification('PDF report downloaded successfully!', 'success');
+
+        } catch (error) {
+            showNotification(error.message, 'error');
+        }
+    };
+    // ----------------------------------
 
 
     const getGradePillStyle = (grade) => {
@@ -177,169 +253,235 @@ const StudentGradingSystem = () => {
 
 
     return (
-        <div className="min-h-screen bg-slate-50 flex flex-col items-center py-10 px-4 sm:px-8">
-            {notification.message && (
-                <div className={`fixed top-5 right-5 z-50 flex items-center gap-3 p-4 shadow-lg text-white ${notification.type === 'success' ? 'bg-green-600' : 'bg-red-600'}`}>
-                    {notification.type === 'success' ? <CheckCircle className="w-5 h-5" /> : <AlertCircle className="w-5 h-5" />}
-                    <span>{notification.message}</span>
-                </div>
-            )}
-
-
-            <div className="w-full max-w-6xl mx-auto">
-                <header className="text-center mb-10">
-                    <h1 className="text-4xl sm:text-5xl font-bold text-slate-900 mb-2">Student Grading System</h1>
-                    <p className="text-lg text-slate-600">Upload an Excel file to automatically process and grade student marks.</p>
-                </header>
-
-
-                <main className="bg-white shadow border border-slate-200 p-8 mb-8">
-                    <div
-                        className={`relative border-2 border-dashed transition-colors duration-200 ${dragActive ? 'border-blue-500 bg-blue-50' : selectedFile ? 'border-green-500 bg-green-50' : 'border-slate-300 bg-slate-50 hover:border-slate-400'}`}
-                        onDragEnter={handleDragEnter} onDragLeave={handleDragLeave} onDragOver={handleDragEvent} onDrop={handleDrop}
-                    >
-                        <input id="file-input" ref={inputRef} type="file" accept=".xlsx,.xls" onChange={handleFileChangeEvent} className="hidden" />
-                        <label htmlFor="file-input" className="flex flex-col items-center justify-center w-full h-48 cursor-pointer group p-4">
-                            {selectedFile ? (
-                                <>
-                                    <FileText className="w-12 h-12 text-green-500 mb-3" />
-                                    <p className="text-green-800 font-medium text-center break-all">{selectedFile.name}</p>
-                                    <p className="text-sm text-green-600 mt-1">Click here or drag a new file to replace</p>
-                                </>
-                            ) : (
-                                <>
-                                    <Upload className="w-12 h-12 mb-3 text-slate-400 group-hover:text-blue-500" />
-                                    <p className="text-base text-slate-600"><span className="font-semibold text-blue-600">Click to upload</span> or drag and drop</p>
-                                    <p className="text-sm text-slate-500 mt-1">Excel files only (.xlsx or .xls)</p>
-                                </>
-                            )}
-                        </label>
-                    </div>
-
-
-                    {selectedFile && (
-                        <div className="mt-6 p-3 bg-slate-100 border border-slate-200 flex items-center justify-between">
-                            <span className="text-sm font-medium text-slate-800 truncate pr-4">{selectedFile.name}</span>
-                            <button onClick={resetState} className="text-slate-500 hover:text-slate-800 font-semibold text-sm flex items-center gap-1 flex-shrink-0">
-                                <X className="w-4 h-4" /> Remove
-                            </button>
+        <div className="min-h-screen bg-slate-50 flex flex-col">
+            {/* Navbar */}
+            <nav className="w-full bg-white shadow-md">
+                <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+                    <div className="flex items-center justify-between h-28">
+                        {/* Logo on the left */}
+                        <div className="flex-shrink-0">
+                            <img src={necLogo} alt="NEC Logo" className="h-16 w-auto" />
                         </div>
-                    )}
+
+                        {/* Centered college name and address (perfectly centered) */}
+                        <div className="flex-1 flex items-center justify-center">
+                            <div className="text-center">
+                                <h1 className="text-3xl md:text-4xl font-bold text-blue-900">NPTEL Grading System</h1>
+                                {/* <p className="text-lg md:text-xl text-gray-600 mt-1">K.R.Nagar, Kovilpatti - 628 503</p> */}
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </nav>
+
+            <div className="flex-1 flex flex-col items-center py-10 px-4 sm:px-8">
+                {notification.message && (
+                    <div className={`fixed top-28 right-5 z-50 flex items-center gap-3 p-4 shadow-lg text-white ${notification.type === 'success' ? 'bg-green-600' : 'bg-red-600'}`}>
+                        {notification.type === 'success' ? <CheckCircle className="w-5 h-5" /> : <AlertCircle className="w-5 h-5" />}
+                        <span>{notification.message}</span>
+                    </div>
+                )}
+
+                <div className="w-full max-w-6xl mx-auto">
 
 
-                    <div className="mt-6 space-y-4">
+                    <div className="bg-white shadow border border-slate-200 p-8 mb-8">
+                        <div
+                            className={`relative border-2 border-dashed transition-colors duration-200 ${dragActive ? 'border-blue-500 bg-blue-50' : selectedFile ? 'border-green-500 bg-green-50' : 'border-slate-300 bg-slate-50 hover:border-slate-400'}`}
+                            onDragEnter={handleDragEnter} onDragLeave={handleDragLeave} onDragOver={handleDragEvent} onDrop={handleDrop}
+                        >
+                            <input id="file-input" ref={inputRef} type="file" accept=".xlsx,.xls" onChange={handleFileChangeEvent} className="hidden" />
+                            <label htmlFor="file-input" className="flex flex-col items-center justify-center w-full h-48 cursor-pointer group p-4">
+                                {selectedFile ? (
+                                    <>
+                                        <FileText className="w-12 h-12 text-green-500 mb-3" />
+                                        <p className="text-green-800 font-medium text-center break-all">{selectedFile.name}</p>
+                                        <p className="text-sm text-green-600 mt-1">Click here or drag a new file to replace</p>
+                                    </>
+                                ) : (
+                                    <>
+                                        <Upload className="w-12 h-12 mb-3 text-slate-400 group-hover:text-blue-500" />
+                                        <p className="text-base text-slate-600"><span className="font-semibold text-blue-600">Click to upload</span> or drag and drop</p>
+                                        <p className="text-sm text-slate-500 mt-1">Excel files only (.xlsx or .xls)</p>
+                                    </>
+                                )}
+                            </label>
+                        </div>
+
+
                         {selectedFile && (
-                            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                                <div>
-                                    <label className="block text-sm font-medium text-slate-700">Expected total students</label>
-                                    <input type="number" min="0" value={expectedTotal} onChange={(e) => setExpectedTotal(e.target.value)} placeholder="e.g. 45" className="mt-1 block w-full rounded-md border-slate-200 shadow-sm focus:border-blue-500 focus:ring-blue-500 p-2" />
-                                    <p className="text-xs text-slate-400 mt-1">Enter the expected number of students in the sheet for verification.</p>
-                                </div>
-
-                                <div>
-                                    <label className="block text-sm font-medium text-slate-700">Subject code</label>
-                                    <input type="text" value={subjectCode} onChange={(e) => setSubjectCode(e.target.value)} placeholder="e.g. CS101" className="mt-1 block w-full rounded-md border-slate-200 shadow-sm focus:border-blue-500 focus:ring-blue-500 p-2" />
-                                    <p className="text-xs text-slate-400 mt-1">Enter the subject code to verify the uploaded sheet matches.</p>
-                                </div>
+                            <div className="mt-6 p-3 bg-slate-100 border border-slate-200 flex items-center justify-between">
+                                <span className="text-sm font-medium text-slate-800 truncate pr-4">{selectedFile.name}</span>
+                                <button onClick={resetState} className="text-slate-500 hover:text-slate-800 font-semibold text-sm flex items-center gap-1 flex-shrink-0">
+                                    <X className="w-4 h-4" /> Remove
+                                </button>
                             </div>
                         )}
-                        <button onClick={handleUpload} disabled={!selectedFile || isUploading} className="w-full flex items-center justify-center gap-2 px-6 py-3 font-semibold shadow-sm text-base bg-blue-600 text-white hover:bg-blue-700 disabled:bg-slate-300 disabled:cursor-not-allowed transition-colors">
-                            {isUploading ? <><Loader2 className="w-5 h-5 animate-spin" /> Processing...</> : <><Upload className="w-5 h-5" /> Upload & Process File</>}
-                        </button>
-                        {downloadInfo && (
-                            <button onClick={handleDownload} className="w-full flex items-center justify-center gap-2 px-6 py-3 bg-green-600 text-white font-semibold shadow-sm hover:bg-green-700 transition-colors">
-                                <Download className="w-5 h-5" /> Download Graded File
+
+
+                        <div className="mt-6 space-y-4">
+                            {selectedFile && (
+                                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                                    {/* Academic Details */}
+                                    <div>
+                                        <label className="block text-sm font-medium text-slate-700">Academic Year</label>
+                                        <input type="text" value={academicYear} onChange={(e) => setAcademicYear(e.target.value)} placeholder="e.g. 2024-2025" className="mt-1 block w-full rounded-md border-slate-200 shadow-sm focus:border-blue-500 focus:ring-blue-500 p-2" />
+                                        <p className="text-xs text-slate-400 mt-1">Enter the current academic year.</p>
+                                    </div>
+                                    <div>
+                                        <label className="block text-sm font-medium text-slate-700">Course name</label>
+                                        <input type="text" value={subjectName} onChange={(e) => setSubjectName(e.target.value)} placeholder="e.g. Computer Science" className="mt-1 block w-full rounded-md border-slate-200 shadow-sm focus:border-blue-500 focus:ring-blue-500 p-2" />
+                                        <p className="text-xs text-slate-400 mt-1">Enter the full name of the course.</p>
+                                    </div>
+                                    {/* Verification Details */}
+                                    <div className="sm:col-span-1">
+                                        <label className="block text-sm font-medium text-slate-700">Expected total students</label>
+                                        <input type="number" min="0" value={expectedTotal} onChange={(e) => setExpectedTotal(e.target.value)} placeholder="e.g. 45" className="mt-1 block w-full rounded-md border-slate-200 shadow-sm focus:border-blue-500 focus:ring-blue-500 p-2" />
+                                        <p className="text-xs text-slate-400 mt-1">Enter the expected number of students in the sheet for verification.</p>
+                                    </div>
+                                    <div className="sm:col-span-1">
+                                        <label className="block text-sm font-medium text-slate-700">Course code</label>
+                                        <input type="text" value={subjectCode} onChange={(e) => setSubjectCode(e.target.value)} placeholder="e.g. CS101" className="mt-1 block w-full rounded-md border-slate-200 shadow-sm focus:border-blue-500 focus:ring-blue-500 p-2" />
+                                        <p className="text-xs text-slate-400 mt-1">Enter the course code to verify the uploaded sheet matches.</p>
+                                    </div>
+                                </div>
+                            )}
+                            {/* Template download (static file in public/) */}
+                            <button
+                                type="button"
+                                onClick={() => handleDownloadTemplate('template.csv')}
+                                className="w-full flex items-center justify-center gap-2 px-6 py-3 font-semibold shadow-sm text-base bg-white text-slate-700 border border-slate-200 hover:bg-slate-50 transition-colors"
+                            >
+                                <Download className="w-5 h-5" /> Download Template
                             </button>
-                        )}
-                    </div>
-                </main>
 
+                            <button
+                                onClick={handleUpload}
+                                disabled={!selectedFile || isUploading || !academicYear || !subjectName || !expectedTotal || !subjectCode}
+                                className="w-full flex items-center justify-center gap-2 px-6 py-3 font-semibold shadow-sm text-base bg-blue-600 text-white hover:bg-blue-700 disabled:bg-slate-300 disabled:cursor-not-allowed transition-colors"
+                            >
+                                {isUploading ? <><Loader2 className="w-5 h-5 animate-spin" /> Processing...</> : <><Upload className="w-5 h-5" /> Upload & Process File</>}
+                            </button>
 
-                {resultStats && resultDetails.length > 0 &&
-                    <div className="space-y-8">
-                        <section>
-                            <h2 className="text-2xl font-semibold mb-4 text-slate-800 flex items-center gap-2"><BarChart3 /> Results Summary</h2>
-                            <div className="grid grid-cols-2 md:grid-cols-5 gap-4">
-                                <StatCard title="Total Students" value={resultStats.count} />
-                                <StatCard title="Average Marks" value={resultStats.average} />
-                                <StatCard title="Highest Marks" value={resultStats.max} />
-                                <StatCard title="Lowest Marks" value={resultStats.min} />
-                                <StatCard title="Grading Method" value={resultStats.grading_method?.replace(/_/g, ' ')} />
-                            </div>
-                        </section>
-
-
-                        {/* ⭐ GRADE MARK RANGES using backend*/}
-                        <section>
-                            <h2 className="text-2xl font-semibold mb-4 text-slate-800 flex items-center gap-2"><ListOrdered /> Grade Mark Ranges</h2>
-                            {gradeRanges ? (
-                                <div className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-7 gap-4">
-                                    {gradeSystem.ranges.map(({ grade }) => (
-                                        gradeRanges[grade] && (
-                                            <div key={grade} className="border border-slate-200 bg-white p-4 text-center">
-                                                <p className={`mx-auto mb-2 w-10 h-10 flex items-center justify-center text-sm font-bold ${getGradePillStyle(grade)} rounded-full`}>{grade}</p>
-                                                <p className="text-lg font-semibold text-slate-800">{gradeRanges[grade]}</p>
-                                            </div>
-                                        )
-                                    ))}
+                            {/* Download Buttons Group */}
+                            {downloadInfo && (
+                                <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                                    <button onClick={handleDownload} className="w-full flex items-center justify-center gap-2 px-6 py-3 bg-green-600 text-white font-semibold shadow-sm hover:bg-green-700 transition-colors">
+                                        <Download className="w-5 h-5" /> Download Graded Excel
+                                    </button>
+                                    {/* ⭐ NEW PDF DOWNLOAD BUTTON */}
+                                    <button onClick={handleDownloadPdf} className="w-full flex items-center justify-center gap-2 px-6 py-3 bg-red-600 text-white font-semibold shadow-sm hover:bg-red-700 transition-colors">
+                                        <FileText className="w-5 h-5" /> Download PDF Report
+                                    </button>
                                 </div>
-                            ) : null}
-                        </section>
-
-
-                        <section className="bg-white shadow border border-slate-200">
-                            <h2 className="text-2xl font-semibold text-slate-800 p-6 border-b border-slate-200 flex items-center gap-2">
-                                <BarChart3 /> Grade Distribution
-                            </h2>
-                            <div className="p-6">
-                                <ResponsiveContainer width="100%" height={350}>
-                                    <BarChart data={chartData} margin={{ top: 25, right: 20, left: -10, bottom: 5 }}>
-                                        <CartesianGrid strokeDasharray="3 3" stroke="#e2e8f0" />
-                                        <XAxis dataKey="grade" stroke="#64748b" fontSize={12} tickLine={false} axisLine={false} />
-                                        <YAxis allowDecimals={false} stroke="#64748b" fontSize={12} tickLine={false} axisLine={false} />
-                                        <Tooltip cursor={{ fill: '#f1f5f9' }} contentStyle={{ border: '1px solid #e2e8f0' }} />
-                                        <Bar dataKey="Number of Students" fill="#2563eb" barSize={40}>
-                                            <LabelList dataKey="Number of Students" position="top" />
-                                        </Bar>
-                                    </BarChart>
-                                </ResponsiveContainer>
-                            </div>
-                        </section>
-
-
-                        <section className="bg-white shadow border border-slate-200">
-                            <h2 className="text-2xl font-semibold text-slate-800 p-6 border-b border-slate-200">Student Details</h2>
-                            <div className="max-h-[60vh] overflow-y-auto">
-                                <table className="min-w-full divide-y divide-slate-200">
-                                    <thead className="bg-slate-50 sticky top-0">
-                                        <tr>
-                                            <th className="px-6 py-4 whitespace-nowrap text-sm text-slate-600 uppercase tracking-wider">Name</th>
-                                            <th className="px-6 py-4 whitespace-nowrap text-sm text-slate-600 uppercase tracking-wider">Marks</th>
-                                            <th className="px-6 py-4 whitespace-nowrap text-sm text-slate-600 uppercase tracking-wider">Grade</th>
-                                            <th className="px-6 py-4 whitespace-nowrap text-sm text-slate-600 uppercase tracking-wider">Grade Points</th>
-                                        </tr>
-                                    </thead>
-                                    <tbody className="bg-white divide-y divide-slate-200">
-                                        {resultDetails.map((student, idx) => (
-                                            <tr key={idx} className="hover:bg-slate-50 transition-colors">
-                                                <td className="px-6 py-4 whitespace-nowrap text-sm font-medium text-slate-900">{student.Name}</td>
-                                                <td className="px-6 py-4 whitespace-nowrap text-sm text-slate-600">{student.Marks ?? 'N/A'}</td>
-                                                <td className="px-6 py-4 whitespace-nowrap">
-                                                    <span className={`px-2.5 py-0.5 text-xs font-semibold rounded-md ${getGradePillStyle(student.Grade)}`}>{student.Grade}</span>
-                                                </td>
-                                                <td className="px-6 py-4 whitespace-nowrap text-sm text-slate-600">{student.Grade_Points ?? '-'}</td>
-                                            </tr>
-                                        ))}
-                                    </tbody>
-                                </table>
-                            </div>
-                        </section>
+                            )}
+                        </div>
                     </div>
-                }
+
+                    {resultStats && resultDetails.length > 0 &&
+                        <div className="space-y-8">
+                            {/* Results Summary and Charts Sections remain the same */}
+                            <section>
+                                <h2 className="text-2xl font-semibold mb-4 text-slate-800 flex items-center gap-2"><BarChart3 /> Results Summary</h2>
+                                <div className="grid grid-cols-2 md:grid-cols-5 gap-4">
+                                    <StatCard title="Total Students" value={resultStats.count} />
+                                    <StatCard title="Average Marks" value={resultStats.average} />
+                                    <StatCard title="Highest Marks" value={resultStats.max} />
+                                    <StatCard title="Lowest Marks" value={resultStats.min} />
+                                    <StatCard title="Grading Method" value={resultStats.grading_method?.replace(/_/g, ' ')} />
+                                </div>
+                            </section>
+
+
+                            {/* GRADE MARK RANGES using backend*/}
+                            <section>
+                                <h2 className="text-2xl font-semibold mb-4 text-slate-800 flex items-center gap-2"><ListOrdered /> Grade Mark Ranges</h2>
+                                {gradeRanges ? (
+                                    <div className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-7 gap-4">
+                                        {gradeSystem.ranges.map(({ grade }) => (
+                                            gradeRanges[grade] && (
+                                                <div key={grade} className="border border-slate-200 bg-white p-4 text-center">
+                                                    <p className={`mx-auto mb-2 w-10 h-10 flex items-center justify-center text-sm font-bold ${getGradePillStyle(grade)} rounded-full`}>{grade}</p>
+                                                    <p className="text-lg font-semibold text-slate-800">{gradeRanges[grade]}</p>
+                                                </div>
+                                            )
+                                        ))}
+                                    </div>
+                                ) : null}
+                            </section>
+
+
+                            <section className="bg-white shadow border border-slate-200">
+                                <h2 className="text-2xl font-semibold text-slate-800 p-6 border-b border-slate-200 flex items-center gap-2">
+                                    <BarChart3 /> Grade Distribution
+                                </h2>
+                                <div className="p-6">
+                                    <ResponsiveContainer width="100%" height={350}>
+                                        <BarChart data={chartData} margin={{ top: 25, right: 20, left: -10, bottom: 5 }}>
+                                            <CartesianGrid strokeDasharray="3 3" stroke="#e2e8f0" />
+                                            <XAxis dataKey="grade" stroke="#64748b" fontSize={12} tickLine={false} axisLine={false} />
+                                            <YAxis allowDecimals={false} stroke="#64748b" fontSize={12} tickLine={false} axisLine={false} />
+                                            <Tooltip cursor={{ fill: '#f1f5f9' }} contentStyle={{ border: '1px solid #e2e8f0' }} />
+                                            <Bar dataKey="Number of Students" fill="#2563eb" barSize={40}>
+                                                <LabelList dataKey="Number of Students" position="top" />
+                                            </Bar>
+                                        </BarChart>
+                                    </ResponsiveContainer>
+                                </div>
+                            </section>
+
+
+                            {/* Student Details Table remains the same */}
+                            <section className="bg-white shadow border border-slate-200">
+                                <h2 className="text-2xl font-semibold text-slate-800 p-6 border-b border-slate-200">Student Details</h2>
+                                <div className="max-h-[60vh] overflow-y-auto">
+                                    <table className="min-w-full divide-y divide-slate-200">
+                                        <thead className="bg-slate-50 sticky top-0">
+                                            <tr>
+                                                <th className="px-6 py-4 whitespace-nowrap text-sm text-slate-600 uppercase tracking-wider">Name</th>
+                                                <th className="px-6 py-4 whitespace-nowrap text-sm text-slate-600 uppercase tracking-wider">Marks</th>
+                                                <th className="px-6 py-4 whitespace-nowrap text-sm text-slate-600 uppercase tracking-wider">Grade</th>
+                                                <th className="px-6 py-4 whitespace-nowrap text-sm text-slate-600 uppercase tracking-wider">Grade Points</th>
+                                            </tr>
+                                        </thead>
+                                        <tbody className="bg-white divide-y divide-slate-200">
+                                            {resultDetails.map((student, idx) => (
+                                                <tr key={idx} className="hover:bg-slate-50 transition-colors">
+                                                    <td className="px-6 py-4 whitespace-nowrap text-sm font-medium text-slate-900">{student.Name}</td>
+                                                    <td className="px-6 py-4 whitespace-nowrap text-sm text-slate-600">{student.Marks ?? 'N/A'}</td>
+                                                    <td className="px-6 py-4 whitespace-nowrap">
+                                                        <span className={`px-2.5 py-0.5 text-xs font-semibold rounded-md ${getGradePillStyle(student.Grade)}`}>{student.Grade}</span>
+                                                    </td>
+                                                    <td className="px-6 py-4 whitespace-nowrap text-sm text-slate-600">{student.Grade_Points ?? '-'}</td>
+                                                </tr>
+                                            ))}
+                                        </tbody>
+                                    </table>
+                                </div>
+                            </section>
+                        </div>
+                    }
+                </div>
             </div>
+            {/* Footer */}
+            <footer className="w-full bg-blue-900 mt-8">
+                <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-6 flex flex-col md:flex-row items-start md:items-center justify-between text-sm">
+                    {/* Left: Technical Support title and list */}
+                    <div className="w-full md:w-1/3 text-white text-left">
+                        <div className="font-semibold">Technical Support</div>
+                        <div className="mt-2 text-white">
+                            <p className="leading-6">Hari Rajesh B - <a href="mailto:harirajesh134@gmail.com" className="text-blue-200 underline">harirajesh134@gmail.com</a> - <a href="tel:+918825777232" className="text-blue-200 underline">+91 88257 77232</a></p>
+                            <p className="mt-1 leading-6">Vishwa R - <a href="mailto:vishwarajkumar05@gmail.com" className="text-blue-200 underline">vishwarajkumar05@gmail.com</a> - <a href="tel:+919626684381" className="text-blue-200 underline">+91 96266 84381</a></p>
+                        </div>
+                    </div>
+
+                    {/* Right: copyright */}
+                    <div className="w-full md:w-1/3 mt-4 md:mt-0 text-xs text-blue-200 md:text-right">© {new Date().getFullYear()} National Engineering College</div>
+                </div>
+            </footer>
+
         </div>
     );
 };
-
 
 export default StudentGradingSystem;
